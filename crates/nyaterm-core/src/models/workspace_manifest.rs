@@ -340,12 +340,21 @@ pub enum WorkspaceManifestValidationError {
 fn validate_session_layout(
     sessions: &WorkspaceSessionState,
 ) -> Result<(), WorkspaceManifestValidationError> {
-    let tab_count = sessions.open_tabs.len();
+    // A split tab is persisted as one `open_tabs` entry whose `root` holds the
+    // pane tree, so the open-tab count is not the index space of the pane
+    // layout: that one indexes the sessions each tab expands to. Validating
+    // both against the open-tab count rejected every saved split.
+    let tab_root_count = sessions.open_tabs.len();
+    let expanded_session_count = sessions
+        .open_tabs
+        .iter()
+        .map(|tab| tab.expanded_sessions().len())
+        .sum();
     if let Some(layout) = &sessions.terminal_window_layout {
-        validate_terminal_layout(layout, tab_count)?;
+        validate_terminal_layout(layout, tab_root_count)?;
     }
     if let Some(layout) = &sessions.workspace_pane_layout {
-        validate_workspace_layout(layout, tab_count)?;
+        validate_workspace_layout(layout, expanded_session_count)?;
     }
     Ok(())
 }
@@ -449,9 +458,11 @@ mod tests {
 
     use super::{
         DEVICE_WINDOW_MANIFEST_VERSION, DeviceWindowManifest, DeviceWindowState, MainWindowState,
-        RestorableWorkspacePaneNode, WorkspaceId, WorkspaceManifestValidationError,
-        WorkspaceRestoreManifest, WorkspaceRestoreState, WorkspaceUiState,
+        RestorableOpenTab, RestorableWorkspacePaneNode, WorkspaceId,
+        WorkspaceManifestValidationError, WorkspaceRestoreManifest, WorkspaceRestoreState,
+        WorkspaceUiState,
     };
+    use crate::RestorablePaneNode;
     use crate::MainWindowBounds;
 
     #[test]
@@ -533,6 +544,49 @@ mod tests {
                 tab_count: 0
             })
         );
+    }
+
+    #[test]
+    fn collapsed_split_tab_accepts_pane_indexes_past_the_open_tab_count() {
+        let mut workspace = WorkspaceRestoreState::empty(WorkspaceId::new());
+        workspace.sessions.open_tabs = vec![RestorableOpenTab {
+            ssh_runtime_mode: None,
+            title: "serial".to_string(),
+            session_type: "Serial".to_string(),
+            connection_id: Some("conn".to_string()),
+            custom_name: None,
+            tab_color: None,
+            locked: false,
+            active_pane_id: None,
+            root: Some(RestorablePaneNode::Split {
+                id: String::new(),
+                direction: "horizontal".to_string(),
+                ratio: 0.5,
+                first: Box::new(pane_leaf("left")),
+                second: Box::new(pane_leaf("right")),
+            }),
+        }];
+        workspace.sessions.workspace_pane_layout = Some(RestorableWorkspacePaneNode::Split {
+            id: String::new(),
+            direction: "horizontal".to_string(),
+            ratio: 0.5,
+            first: Box::new(RestorableWorkspacePaneNode::Leaf { tab_index: 0 }),
+            second: Box::new(RestorableWorkspacePaneNode::Leaf { tab_index: 1 }),
+        });
+
+        WorkspaceRestoreManifest::single(workspace)
+            .validate()
+            .expect("a split persisted as one open tab must stay valid");
+    }
+
+    fn pane_leaf(title: &str) -> RestorablePaneNode {
+        RestorablePaneNode::Leaf {
+            id: String::new(),
+            title: title.to_string(),
+            session_type: "Serial".to_string(),
+            connection_id: None,
+            ssh_runtime_mode: None,
+        }
     }
 
     #[test]
