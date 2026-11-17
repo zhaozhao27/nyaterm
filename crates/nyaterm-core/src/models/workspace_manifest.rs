@@ -462,8 +462,8 @@ mod tests {
         WorkspaceManifestValidationError, WorkspaceRestoreManifest, WorkspaceRestoreState,
         WorkspaceUiState,
     };
-    use crate::RestorablePaneNode;
     use crate::MainWindowBounds;
+    use crate::RestorablePaneNode;
 
     #[test]
     fn workspace_manifest_round_trips_unknown_fields() {
