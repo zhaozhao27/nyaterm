@@ -3554,6 +3554,9 @@
       "temporarySshLink": "临时链接",
       "toggleLeftSidebar": "切换左侧边栏",
       "toggleRightSidebar": "切换右侧边栏",
+      "splitHorizontal": "上下分屏（复制当前会话）",
+      "splitVertical": "左右分屏（复制当前会话）",
+      "unsplit": "取消分屏",
       "zoomIn": "放大",
       "zoomOut": "缩小"
     },

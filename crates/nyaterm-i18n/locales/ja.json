@@ -3554,6 +3554,9 @@
       "temporarySshLink": "一時リンク",
       "toggleLeftSidebar": "左サイドバーの切り替え",
       "toggleRightSidebar": "右サイドバー",
+      "splitHorizontal": "上下分割（セッションを複製）",
+      "splitVertical": "左右分割（セッションを複製）",
+      "unsplit": "分割を解除",
       "zoomIn": "拡大",
       "zoomOut": "縮小"
     },

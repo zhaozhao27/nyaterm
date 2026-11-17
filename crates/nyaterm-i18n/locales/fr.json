@@ -3554,6 +3554,9 @@
       "temporarySshLink": "Lien temporaire",
       "toggleLeftSidebar": "Basculer la barre latérale gauche",
       "toggleRightSidebar": "Barre latérale droite",
+      "splitHorizontal": "Diviser haut/bas (dupliquer la session)",
+      "splitVertical": "Diviser gauche/droite (dupliquer la session)",
+      "unsplit": "Annuler la division",
       "zoomIn": "Zoom avant",
       "zoomOut": "Zoom arrière"
     },
