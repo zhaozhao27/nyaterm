@@ -667,24 +667,13 @@ impl AppShell {
             return;
         }
         self.enter_flushing(cx);
-        let operations = self.controller.read(cx).sync_operations();
-        operations.pause_and_cancel();
-        cx.spawn(async move |this, cx| {
-            let mut grace = cx.background_executor().timer(SHUTDOWN_SYNC_GRACE).fuse();
-            futures::select_biased! {
-                _ = operations.wait_for_idle().fuse() => {}
-                _ = grace => {
-                    tracing::warn!(
-                        pid = std::process::id(),
-                        "cloud sync still running at the shutdown grace; stopping workers anyway"
-                    );
-                }
-            }
-            let _ = this.update(cx, |this, cx| {
-                this.stop_workspace_workers(launch_update, cx)
-            });
-        })
-        .detach();
+        // 云同步的收尾窗口已经在落盘阶段给过，这里再等一次只是把正常退出的
+        // 等待翻倍；Force Quit 的语义更是不该等。
+        self.controller
+            .read(cx)
+            .sync_operations()
+            .pause_and_cancel();
+        self.stop_workspace_workers(launch_update, cx);
     }
 
     fn stop_workspace_workers(&mut self, launch_update: bool, cx: &mut Context<Self>) {
