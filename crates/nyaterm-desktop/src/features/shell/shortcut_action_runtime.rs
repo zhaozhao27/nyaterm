@@ -1,17 +1,17 @@
 use gpui::{Context, Div, InteractiveElement, Stateful, Window};
 
 use crate::features::NyaTermApp;
-use crate::models::{BottomPanelMode, NavItem, StartupCommandAction};
+use crate::models::{BottomPanelMode, NavItem, StartupCommandAction, WorkspaceSplitDirection};
 use crate::shortcuts::{
     CloseTab, CopySelectedConnections, DuplicateSession, DuplicateSessionWithCommand, LockScreen,
     ManageSyncGroups, MultiplexSsh, MultiplexSshWithCommand, NewLocalTerminal, NewSession, NextTab,
     NextTerminalGroup, OpenChat, OpenNewSessionMenu, OpenSettings, PreviousTab,
     PreviousTerminalGroup, QuickSwitch, RenameFile, ResetZoom, ShortcutId, ShortcutInvocation,
-    ShowAllCommands, ShowCommandSuggestions, SwitchToTab, TemporarySshLink, TerminalClear,
-    TerminalClearAll, TerminalCommandNext, TerminalCommandPrevious, TerminalCommandSelect,
-    TerminalCopy, TerminalFind, TerminalPaste, TerminalPasteSelected, TerminalSelectAll,
-    ToggleLeftSidebar, ToggleNativeFullscreen, TogglePaneFocus, ToggleRecording,
-    ToggleRightSidebar, ZoomIn, ZoomOut,
+    ShowAllCommands, ShowCommandSuggestions, SplitHorizontal, SplitVertical, SwitchToTab,
+    TemporarySshLink, TerminalClear, TerminalClearAll, TerminalCommandNext,
+    TerminalCommandPrevious, TerminalCommandSelect, TerminalCopy, TerminalFind, TerminalPaste,
+    TerminalPasteSelected, TerminalSelectAll, ToggleLeftSidebar, ToggleNativeFullscreen,
+    TogglePaneFocus, ToggleRecording, ToggleRightSidebar, Unsplit, ZoomIn, ZoomOut,
 };
 
 fn shortcut_interceptor_dispatches(id: ShortcutId) -> bool {
@@ -220,6 +220,17 @@ impl NyaTermApp {
             ShortcutId::ToggleRightSidebar => {
                 self.execute_title_menu_command(&TitleMenuCommand::ToggleRightSidebar, window, cx)
             }
+            ShortcutId::SplitHorizontal => {
+                self.split_workspace_with_duplicate(
+                    WorkspaceSplitDirection::Horizontal,
+                    window,
+                    cx,
+                );
+            }
+            ShortcutId::SplitVertical => {
+                self.split_workspace_with_duplicate(WorkspaceSplitDirection::Vertical, window, cx);
+            }
+            ShortcutId::Unsplit => self.unsplit_workspace(cx),
             ShortcutId::TogglePaneFocus => {
                 if self.session.active_id().is_some()
                     && !self.active_workspace_tab().is_some_and(|key| {
@@ -355,6 +366,9 @@ impl NyaTermApp {
             ))
             .on_action(direct_handler!(ToggleLeftSidebar, ToggleLeftSidebar))
             .on_action(direct_handler!(ToggleRightSidebar, ToggleRightSidebar))
+            .on_action(direct_handler!(SplitHorizontal, SplitHorizontal))
+            .on_action(direct_handler!(SplitVertical, SplitVertical))
+            .on_action(direct_handler!(Unsplit, Unsplit))
             .on_action(direct_handler!(TogglePaneFocus, TogglePaneFocus))
             .on_action(direct_handler!(
                 ToggleNativeFullscreen,

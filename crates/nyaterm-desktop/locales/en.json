@@ -3009,6 +3009,9 @@
       "temporarySshLink": "Temporary Link",
       "toggleLeftSidebar": "Toggle Left Sidebar",
       "toggleRightSidebar": "Right Sidebar",
+      "splitHorizontal": "Split Top/Bottom (Duplicate Session)",
+      "splitVertical": "Split Left/Right (Duplicate Session)",
+      "unsplit": "Unsplit Panes",
       "zoomIn": "Zoom In",
       "zoomOut": "Zoom Out"
     },

@@ -47,6 +47,9 @@ pub(crate) enum ShortcutId {
     MultiplexSshWithCommand,
     ToggleLeftSidebar,
     ToggleRightSidebar,
+    SplitHorizontal,
+    SplitVertical,
+    Unsplit,
     TogglePaneFocus,
     ToggleNativeFullscreen,
     ZoomIn,
@@ -93,6 +96,9 @@ impl ShortcutId {
             Self::MultiplexSshWithCommand => "tab.multiplexSshWithCommand",
             Self::ToggleLeftSidebar => "view.toggleLeftSidebar",
             Self::ToggleRightSidebar => "view.toggleRightSidebar",
+            Self::SplitHorizontal => "view.splitHorizontal",
+            Self::SplitVertical => "view.splitVertical",
+            Self::Unsplit => "view.unsplit",
             Self::TogglePaneFocus => "view.togglePaneFocus",
             Self::ToggleNativeFullscreen => "view.toggleNativeFullscreen",
             Self::ZoomIn => "view.zoomIn",
@@ -379,7 +385,7 @@ macro_rules! shortcut {
     };
 }
 
-pub(crate) const SHORTCUT_REGISTRY: [ShortcutDefinition; 41] = [
+pub(crate) const SHORTCUT_REGISTRY: [ShortcutDefinition; 44] = [
     shortcut!(
         TerminalCopy,
         Terminal,
@@ -709,6 +715,39 @@ pub(crate) const SHORTCUT_REGISTRY: [ShortcutDefinition; 41] = [
         "meta+shift+b",
         Supported,
         "Toggles the Inspector panel."
+    ),
+    shortcut!(
+        SplitHorizontal,
+        View,
+        "settings.shortcutLabels.splitHorizontal",
+        Workspace,
+        ShortcutKind::Direct,
+        "ctrl+shift+alt+h",
+        "meta+shift+alt+h",
+        Supported,
+        "Splits the workspace top/bottom with a duplicate of the active session."
+    ),
+    shortcut!(
+        SplitVertical,
+        View,
+        "settings.shortcutLabels.splitVertical",
+        Workspace,
+        ShortcutKind::Direct,
+        "ctrl+shift+alt+v",
+        "meta+shift+alt+v",
+        Supported,
+        "Splits the workspace left/right with a duplicate of the active session."
+    ),
+    shortcut!(
+        Unsplit,
+        View,
+        "settings.shortcutLabels.unsplit",
+        Workspace,
+        ShortcutKind::Direct,
+        "ctrl+shift+alt+u",
+        "meta+shift+alt+u",
+        Supported,
+        "Merges every split pane back into the active tab."
     ),
     shortcut!(
         TogglePaneFocus,
@@ -1128,6 +1167,9 @@ fn binding_for_action(
         ShortcutId::MultiplexSshWithCommand => binding!(MultiplexSshWithCommand),
         ShortcutId::ToggleLeftSidebar => binding!(ToggleLeftSidebar),
         ShortcutId::ToggleRightSidebar => binding!(ToggleRightSidebar),
+        ShortcutId::SplitHorizontal => binding!(SplitHorizontal),
+        ShortcutId::SplitVertical => binding!(SplitVertical),
+        ShortcutId::Unsplit => binding!(Unsplit),
         ShortcutId::TogglePaneFocus => binding!(TogglePaneFocus),
         ShortcutId::ToggleNativeFullscreen => binding!(ToggleNativeFullscreen),
         ShortcutId::ZoomIn => binding!(ZoomIn),
@@ -1398,7 +1440,7 @@ mod tests {
 
     #[test]
     fn registry_is_complete_unique_and_has_valid_platform_defaults() {
-        assert_eq!(SHORTCUT_REGISTRY.len(), 41);
+        assert_eq!(SHORTCUT_REGISTRY.len(), 44);
         let mut ids = HashSet::new();
         for definition in SHORTCUT_REGISTRY {
             assert!(ids.insert(definition.id));
