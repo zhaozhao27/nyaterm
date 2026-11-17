@@ -760,34 +760,21 @@ impl AppShell {
         tracing::info!(
             pid = std::process::id(),
             stage = "sync",
+            elapsed_ms = started_at.elapsed().as_millis(),
             "shutdown stage started"
         );
-        cx.spawn(async move |this, cx| {
-            let mut grace = cx.background_executor().timer(SHUTDOWN_SYNC_GRACE).fuse();
-            futures::select_biased! {
-                _ = operations.wait_for_idle().fuse() => {}
-                _ = grace => {
-                    tracing::warn!(
-                        pid = std::process::id(),
-                        elapsed_ms = started_at.elapsed().as_millis(),
-                        "cloud sync did not stop within the shutdown grace"
-                    );
-                }
-            }
-            let _ = this.update(cx, |this, cx| {
-                tracing::info!(
-                    pid = std::process::id(),
-                    stage = "sync",
-                    elapsed_ms = started_at.elapsed().as_millis(),
-                    "shutdown stage finished"
-                );
-                this.begin_shutdown_after_sync(cx);
-            });
-        })
-        .detach();
+        // 本地落盘先入队再等网络：redb 写入与云同步无关，而取消只是置位，
+        // 在途请求仍可能十几秒才返回。把落盘排在它后面，等于让用户在这个
+        // 窗口里强杀进程时丢掉全部本地状态。
+        self.begin_shutdown_after_sync(operations, started_at, cx);
     }
 
-    fn begin_shutdown_after_sync(&mut self, cx: &mut Context<Self>) {
+    fn begin_shutdown_after_sync(
+        &mut self,
+        operations: crate::features::sync::operation::CloudSyncOperationRegistry,
+        sync_started_at: Instant,
+        cx: &mut Context<Self>,
+    ) {
         let workspace_id = self.workspace_id;
         match self.controller.update(cx, |controller, cx| {
             controller.prepare_other_workspaces_for_quit(workspace_id, cx)
@@ -882,6 +869,24 @@ impl AppShell {
             "shutdown persistence queued"
         );
         cx.spawn(async move |this, cx| {
+            // 落盘请求已经进了 store 队列，这里只是给云同步一个收尾窗口。
+            let mut grace = cx.background_executor().timer(SHUTDOWN_SYNC_GRACE).fuse();
+            futures::select_biased! {
+                _ = operations.wait_for_idle().fuse() => {}
+                _ = grace => {
+                    tracing::warn!(
+                        pid = std::process::id(),
+                        elapsed_ms = sync_started_at.elapsed().as_millis(),
+                        "cloud sync did not stop within the shutdown grace"
+                    );
+                }
+            }
+            tracing::info!(
+                pid = std::process::id(),
+                stage = "sync",
+                elapsed_ms = sync_started_at.elapsed().as_millis(),
+                "shutdown stage finished"
+            );
             let flush_started_at = Instant::now();
             let mut failure = None;
             for pending in pending_tasks {
