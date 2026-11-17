@@ -1,6 +1,7 @@
 use super::DesktopController;
 use crate::features::WorkspaceCloseSnapshot;
 use crate::features::shell::tray::show_window as show_tray_window;
+use futures::FutureExt as _;
 use gpui::AppContext as _;
 use gpui::Context;
 use gpui::Task;
@@ -416,8 +417,25 @@ impl DesktopController {
                 let _ = shell.update(cx, |shell, cx| shell.enter_flushing(cx));
             }
         });
+        operations.pause_and_cancel();
         cx.spawn(async move |this, cx| {
-            operations.wait_for_idle().await;
+            // 启动期退出走的是同一条判断：取消只置位，在途请求不会立刻返回，
+            // 无限等它等于让“关不掉”重现。
+            let mut grace = cx
+                .background_executor()
+                .timer(crate::app_shell::SHUTDOWN_SYNC_GRACE)
+                .fuse();
+            futures::select_biased! {
+                _ = operations.wait_for_idle().fuse() => {}
+                _ = grace => {
+                    tracing::warn!(
+                        pid = std::process::id(),
+                        stage = "sync",
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "cloud sync did not stop within the shutdown grace"
+                    );
+                }
+            }
             tracing::info!(
                 pid = std::process::id(),
                 stage = "sync",
