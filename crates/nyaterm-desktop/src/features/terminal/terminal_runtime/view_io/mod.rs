@@ -78,27 +78,23 @@ fn terminal_cached_scrollback_snapshot_covering_display_offset(
         return None;
     }
     if let Some(snapshot) = view.scrollback_snapshots.get(&display_offset)
-        && view
-            .history_state()
-            .preserves_coordinates_from(snapshot.history)
+        && let Some(reanchored) = view.reanchored_scrollback_snapshot(snapshot)
     {
-        return Some(snapshot.clone());
+        return Some(reanchored);
     }
     let scrollback_len = view.scrollback_len_for_ui();
     view.scrollback_snapshots
         .values()
+        .filter_map(|snapshot| view.reanchored_scrollback_snapshot(snapshot))
         .filter(|snapshot| {
-            view.history_state()
-                .preserves_coordinates_from(snapshot.history)
-                && terminal_snapshot_covers_display_offset(
-                    snapshot.as_ref(),
-                    display_offset,
-                    viewport_rows,
-                    scrollback_len,
-                )
+            terminal_snapshot_covers_display_offset(
+                snapshot.as_ref(),
+                display_offset,
+                viewport_rows,
+                scrollback_len,
+            )
         })
         .min_by_key(|snapshot| snapshot.display_offset.abs_diff(display_offset))
-        .cloned()
 }
 
 fn terminal_retained_snapshot_matches_view(
@@ -151,7 +147,8 @@ fn terminal_paint_window_snapshot_for_view(
         }
         return retained_surface_snapshot.filter(|snapshot| {
             view.history_state()
-                .preserves_coordinates_from(snapshot.history)
+                .reanchor_shift(snapshot.history)
+                .is_some_and(|shift| shift == 0)
                 && terminal_snapshot_matches_grid_geometry(
                     snapshot.as_ref(),
                     view.screen.cols(),

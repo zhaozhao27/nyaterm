@@ -900,21 +900,25 @@ impl TerminalViewState {
         )
     }
 
-    fn clone_snapshot_with_scrollback_delta(
+    fn rekeyed_snapshot(
         snapshot: &Arc<TerminalSnapshot>,
-        delta: usize,
+        offset_shift: usize,
+        length_growth: usize,
         history: nyaterm_terminal::TerminalHistoryState,
     ) -> Arc<TerminalSnapshot> {
         let mut snapshot = (**snapshot).clone();
         snapshot.history = history;
-        snapshot.scrollback_len = snapshot.scrollback_len.saturating_add(delta);
-        snapshot.total_rows = snapshot.total_rows.saturating_add(delta);
-        snapshot.display_offset = snapshot.display_offset.saturating_add(delta);
+        snapshot.scrollback_len = snapshot.scrollback_len.saturating_add(length_growth);
+        snapshot.total_rows = snapshot.total_rows.saturating_add(length_growth);
+        snapshot.display_offset = snapshot.display_offset.saturating_add(offset_shift);
         Arc::new(snapshot)
     }
 
-    fn rekey_scrollback_query_caches_for_growth(&mut self, delta: usize) {
-        if delta == 0 {
+    /// History moved by `shift` rows (growth or eviction). Cached frames still
+    /// hold the same rows, now `shift` rows closer to live, so their keys and
+    /// display offsets move with it instead of being discarded.
+    fn rekey_scrollback_query_caches_for_shift(&mut self, shift: usize, length_growth: usize) {
+        if shift == 0 && length_growth == 0 {
             return;
         }
         let history = self.history_state();
@@ -927,18 +931,20 @@ impl TerminalViewState {
             .filter(|(_, snapshot)| snapshot.logical_lines.is_none())
             .map(|(offset, snapshot)| {
                 (
-                    offset.saturating_add(delta),
-                    Self::clone_snapshot_with_scrollback_delta(&snapshot, delta, history),
+                    offset.saturating_add(shift),
+                    Self::rekeyed_snapshot(&snapshot, shift, length_growth, history),
                 )
             })
             .collect();
         self.scrollback_action_links = self
             .scrollback_action_links
             .drain()
-            .map(|(offset, links)| (offset.saturating_add(delta), links))
+            .map(|(offset, links)| (offset.saturating_add(shift), links))
             .collect();
-        // In-flight worker requests carry the old literal offset. Once output
-        // grows scrollback, the anchored target needs a new offset request.
+        // In-flight requests carry the literal offset they were sent with, and a
+        // reply is matched by that literal. Retargeting the pending set would
+        // leave an entry that no reply can complete, which suppresses every
+        // later request for that session.
         self.pending_snapshot_offsets.clear();
         self.priority_pending_snapshot_offsets.clear();
     }
@@ -949,12 +955,18 @@ impl TerminalViewState {
     ) {
         let current = self.history_state();
         let scrolled = current.scrolled_since(previous);
-        if !current.preserves_coordinates_from(previous) {
-            self.clear_scrollback_query_caches();
-        } else if self.scroll_offset > 0 {
-            self.rekey_scrollback_query_caches_for_growth(scrolled.unwrap_or(0));
-        } else if scrolled.is_some_and(|rows| rows > 0) {
-            self.clear_scrollback_query_caches();
+        match current.reanchor_shift(previous) {
+            None => self.clear_scrollback_query_caches(),
+            Some(shift) => {
+                let growth = current
+                    .scrollback_len
+                    .saturating_sub(previous.scrollback_len);
+                if self.scroll_offset > 0 {
+                    self.rekey_scrollback_query_caches_for_shift(shift, growth);
+                } else if shift > 0 {
+                    self.clear_scrollback_query_caches();
+                }
+            }
         }
         self.scroll_offset = current.reanchor_offset(previous, self.scroll_offset);
         if self.scroll_offset > 0 && scrolled.is_some_and(|rows| rows > 0) {
@@ -1314,26 +1326,51 @@ impl TerminalViewState {
         self.priority_pending_snapshot_offsets.clear();
     }
 
+    /// A cached frame reexpressed against the current history, or None when the
+    /// rows it holds left the retained buffer.
+    pub(crate) fn reanchored_scrollback_snapshot(
+        &self,
+        snapshot: &Arc<TerminalSnapshot>,
+    ) -> Option<Arc<TerminalSnapshot>> {
+        let history = self.history_state();
+        let shift = history.reanchor_shift(snapshot.history)?;
+        let growth = history
+            .scrollback_len
+            .saturating_sub(snapshot.history.scrollback_len);
+        if shift == 0 && growth == 0 {
+            return Some(snapshot.clone());
+        }
+        Some(Self::rekeyed_snapshot(snapshot, shift, growth, history))
+    }
+
+    /// Store a frame built from `snapshot.history` at the offset it will occupy
+    /// now. Returns that offset, or None when the history it describes is gone.
     pub(crate) fn remember_scrollback_snapshot(
         &mut self,
         offset: usize,
         snapshot: Arc<TerminalSnapshot>,
-    ) {
-        if !self
-            .history_state()
-            .preserves_coordinates_from(snapshot.history)
-        {
-            return;
-        }
+    ) -> Option<usize> {
+        let history = self.history_state();
+        let shift = history.reanchor_shift(snapshot.history)?;
+        let growth = history
+            .scrollback_len
+            .saturating_sub(snapshot.history.scrollback_len);
+        let offset = offset.saturating_add(shift);
+        let snapshot = if shift == 0 && growth == 0 {
+            snapshot
+        } else {
+            Self::rekeyed_snapshot(&snapshot, shift, growth, history)
+        };
         self.observe_line_number_digits(&snapshot);
         if offset == 0 {
             self.frame_input_highlights = None;
             self.detached_history = None;
             self.frame_snapshot = Some(snapshot);
-            return;
+            return Some(0);
         }
         self.scrollback_snapshots.insert(offset, snapshot);
         self.prune_scrollback_snapshot_cache(offset);
+        Some(offset)
     }
 
     fn observe_line_number_digits(&mut self, snapshot: &TerminalSnapshot) {

@@ -857,11 +857,62 @@ impl TerminalSurface {
         self.pending_scroll_snapshot_offsets.clear();
     }
 
+    /// Keep the retained window on the same rows after history moved. Eviction
+    /// shifts content toward live as well as growth does, so the rows are still
+    /// valid; only their absolute keys and display offsets change. Returns false
+    /// when the history these frames describe is gone and the state must clear.
+    fn reanchor_retained_scroll_state_for_history(
+        &mut self,
+        state: &TerminalScrollVisualState,
+    ) -> bool {
+        let Some(shift) = state.history.reanchor_shift(self.history) else {
+            return false;
+        };
+        let growth = state
+            .scrollback_len
+            .saturating_sub(self.history.scrollback_len);
+        if shift == 0 && growth == 0 {
+            return true;
+        }
+        // Retained rows key on absolute rows, which index the retained buffer
+        // from its oldest row. Growth adds rows at the top; eviction drops them,
+        // so a surviving row moves by `growth - shift`.
+        let row_shift = isize::try_from(growth).unwrap_or(isize::MAX)
+            - isize::try_from(shift).unwrap_or(isize::MAX);
+        self.retained_rows = std::mem::take(&mut self.retained_rows)
+            .into_iter()
+            .filter_map(|(row, data)| {
+                let moved = isize::try_from(row).ok()?.checked_add(row_shift)?;
+                usize::try_from(moved).ok().map(|row| (row, data))
+            })
+            .collect();
+        let reanchor = |snapshot: &Arc<TerminalSnapshot>| {
+            let mut snapshot = (**snapshot).clone();
+            snapshot.display_offset = snapshot.display_offset.saturating_add(shift);
+            snapshot.scrollback_len = snapshot.scrollback_len.saturating_add(growth);
+            snapshot.total_rows = snapshot.total_rows.saturating_add(growth);
+            snapshot.history = state.history;
+            Arc::new(snapshot)
+        };
+        self.snapshot = self.snapshot.as_ref().map(reanchor);
+        self.retained_snapshots = self
+            .retained_snapshots
+            .drain(..)
+            .map(|snapshot| reanchor(&snapshot))
+            .collect();
+        self.pending_scroll_snapshot_offsets =
+            std::mem::take(&mut self.pending_scroll_snapshot_offsets)
+                .into_iter()
+                .map(|offset| offset.saturating_add(shift))
+                .collect();
+        true
+    }
+
     pub(in crate::features) fn update_scroll_chrome_without_snapshot(
         &mut self,
         state: &TerminalScrollVisualState,
     ) -> bool {
-        if !state.history.preserves_coordinates_from(self.history) {
+        if !self.reanchor_retained_scroll_state_for_history(state) {
             self.clear_retained_scroll_state();
             self.snapshot = None;
         }
@@ -918,7 +969,7 @@ impl TerminalSurface {
         &mut self,
         state: &TerminalScrollVisualState,
     ) -> bool {
-        if !state.history.preserves_coordinates_from(self.history) {
+        if !self.reanchor_retained_scroll_state_for_history(state) {
             self.clear_retained_scroll_state();
             self.snapshot = None;
         }
@@ -2024,7 +2075,10 @@ impl TerminalSurface {
         &mut self,
         state: TerminalScrollVisualState,
     ) -> bool {
-        if state.history.preserves_coordinates_from(self.history)
+        if state
+            .history
+            .reanchor_shift(self.history)
+            .is_some_and(|shift| shift == 0)
             && self.has_snapshot_covering_display_offset(
                 state.display_offset,
                 state.viewport_rows,
@@ -2068,7 +2122,10 @@ impl TerminalSurface {
     }
 
     fn scroll_visual_state_needs_repaint(&self, state: &TerminalScrollVisualState) -> bool {
-        if state.history.preserves_coordinates_from(self.history)
+        if state
+            .history
+            .reanchor_shift(self.history)
+            .is_some_and(|shift| shift == 0)
             && self.has_snapshot_covering_display_offset(
                 state.display_offset,
                 state.viewport_rows,
@@ -2864,10 +2921,18 @@ impl Render for TerminalSurface {
         let cell_w = self.cell_width.max(1.0);
         let cell_h =
             nyaterm_core::terminal_snapped_cell_height(self.cell_height, window.scale_factor());
-        let snapshot = self
-            .snapshot
-            .clone()
-            .unwrap_or_else(|| Arc::new(TerminalScreen::default().viewport_snapshot(0)));
+        let snapshot = self.snapshot.clone().unwrap_or_else(|| {
+            // Scrolled back with no frame for the target offset yet. Painting an
+            // empty default grid here replaces the history the user is reading
+            // with blank rows, then restores it once the frame lands: that
+            // alternation is the flicker. Reuse the retained window instead.
+            self.retained_snapshot_covering_display_offset(
+                self.display_offset,
+                self.viewport_rows,
+                self.scrollback_len,
+            )
+            .unwrap_or_else(|| Arc::new(TerminalScreen::default().viewport_snapshot(0)))
+        });
         self.maybe_log_scroll_snapshot_pending(snapshot.as_ref());
         let viewport_anchor_row = terminal_snapshot_anchor_row_for_display_offset(
             snapshot.as_ref(),

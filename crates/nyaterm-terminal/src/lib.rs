@@ -278,6 +278,15 @@ impl TerminalHistoryState {
         })
     }
 
+    /// Rows pushed since `previous` when the history merely moved, which holds
+    /// through eviction where absolute row keys stop being comparable. Cached
+    /// frames stay usable: their rows shift down by this count. A shift larger
+    /// than the whole retained buffer means the history was replaced.
+    pub fn reanchor_shift(self, previous: Self) -> Option<usize> {
+        let scrolled = self.scrolled_since(previous)?;
+        (scrolled <= self.scrollback_len.saturating_add(self.viewport_rows)).then_some(scrolled)
+    }
+
     pub fn reanchor_offset(self, previous: Self, offset: usize) -> usize {
         if offset == 0 {
             return 0;

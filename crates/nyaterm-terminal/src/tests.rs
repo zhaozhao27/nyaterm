@@ -2933,6 +2933,40 @@ fn history_coordinates_distinguish_growth_from_full_buffer_rotation() {
 }
 
 #[test]
+fn reanchor_shift_tracks_history_that_evicts_and_rejects_replaced_history() {
+    let mut screen = TerminalScreen::new(16, 3);
+    screen.set_scrollback_limit(8);
+    screen.advance(b"0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n");
+    let full = screen.snapshot();
+    assert_eq!(full.scrollback_len, 8);
+    screen.advance(b"11\r\n12\r\n");
+    let rotated = screen.snapshot();
+    assert_eq!(rotated.history.reanchor_shift(full.history), Some(2));
+    assert!(!rotated.history.preserves_coordinates_from(full.history));
+
+    assert_eq!(rotated.history.reanchor_shift(rotated.history), Some(0));
+
+    screen.advance(b"\x1b[?1049h");
+    assert_eq!(screen.history_state().reanchor_shift(rotated.history), None);
+    screen.advance(b"\x1b[?1049l");
+    let primary = screen.history_state();
+    screen.resize(20, 3);
+    assert_eq!(screen.history_state().reanchor_shift(primary), None);
+
+    let previous = super::TerminalHistoryState {
+        scroll_count: 0,
+        scrollback_len: 8,
+        ..Default::default()
+    };
+    let replaced = super::TerminalHistoryState {
+        scroll_count: 8 + 3 + 1,
+        scrollback_len: 8,
+        ..previous
+    };
+    assert_eq!(replaced.reanchor_shift(previous), None);
+}
+
+#[test]
 fn history_coordinates_reject_reset_resize_screen_switch_and_backwards_snapshots() {
     let mut screen = TerminalScreen::new(16, 3);
     screen.advance(b"0\r\n1\r\n2\r\n3\r\n");

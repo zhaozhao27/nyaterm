@@ -575,18 +575,23 @@ fn session_exit_preserves_history_with_settled_or_pending_output_frames() {
 }
 
 #[test]
-fn rotated_history_cache_cannot_suppress_a_priority_scroll_snapshot() {
+fn rotated_history_cache_reanchors_instead_of_being_discarded() {
     let mut view = TerminalViewState::new();
     view.screen = nyaterm_terminal::TerminalScreen::new(16, 3);
     view.screen.set_scrollback_limit(8);
     view.append_text("0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n");
-    let old = Arc::new(view.screen.viewport_snapshot_with_window(3, 5, 3));
+    let old = Arc::new(view.screen.viewport_snapshot(3));
     view.append_text("11\r\n");
-    // Exercise the validity check itself, even if a stale entry survived invalidation.
+    // A frame built before eviction keeps its rows; only the display offset it
+    // belongs to moves. Keying it at the stale offset proves the validity check
+    // reanchors the frame instead of trusting the key.
     view.scrollback_snapshots.insert(3, old);
+    assert!(super::terminal_view_has_cached_scrollback_snapshot_covering_offset(&view, 4));
     assert!(!super::terminal_view_has_cached_scrollback_snapshot_covering_offset(&view, 3));
-    assert!(!super::terminal_view_has_cached_scroll_snapshot_ready_for_user_scroll(&view, 3));
+    assert!(!super::terminal_scroll_snapshot_request_should_enqueue(
+        &mut view, 4, false
+    ));
     assert!(super::terminal_scroll_snapshot_request_should_enqueue(
-        &mut view, 3, true
+        &mut view, 3, false
     ));
 }

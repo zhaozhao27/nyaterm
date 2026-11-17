@@ -105,6 +105,28 @@ impl TerminalSelection {
         }
     }
 
+    /// Absolute row keys index the retained buffer from its oldest row, so an
+    /// eviction moves a surviving row to a lower index.
+    pub fn reanchor_rows_up(self, evicted: usize) -> Option<Self> {
+        Some(Self {
+            anchor: TerminalSelectionEndpoint {
+                position: TerminalBufferCellPos::new(
+                    self.anchor.position.line.checked_sub(evicted)?,
+                    self.anchor.position.col,
+                ),
+                ..self.anchor
+            },
+            head: TerminalSelectionEndpoint {
+                position: TerminalBufferCellPos::new(
+                    self.head.position.line.checked_sub(evicted)?,
+                    self.head.position.col,
+                ),
+                ..self.head
+            },
+            ..self
+        })
+    }
+
     fn ordered_endpoints(self) -> (TerminalSelectionEndpoint, TerminalSelectionEndpoint) {
         if self.anchor.boundary() <= self.head.boundary() {
             (self.anchor, self.head)
@@ -318,6 +340,55 @@ mod tests {
         assert_eq!(
             TerminalSelection::all_buffer(80).cols_for_absolute_line(10000),
             Some((0, usize::MAX))
+        );
+    }
+
+    #[test]
+    fn reanchoring_rows_up_shifts_both_endpoints_and_preserves_columns_and_sides() {
+        let selection = TerminalSelection::from_range(
+            TerminalBufferCellPos::new(3, 2),
+            TerminalBufferCellPos::new(5, 4),
+        );
+        assert_eq!(selection.reanchor_rows_up(0), Some(selection));
+
+        let shifted = selection.reanchor_rows_up(2).unwrap();
+        assert_eq!(
+            shifted.anchor,
+            TerminalSelectionEndpoint::new(
+                TerminalBufferCellPos::new(1, 2),
+                TerminalCellSide::Left
+            )
+        );
+        assert_eq!(
+            shifted.head,
+            TerminalSelectionEndpoint::new(
+                TerminalBufferCellPos::new(3, 4),
+                TerminalCellSide::Right
+            )
+        );
+        assert!(!shifted.all_buffer);
+    }
+
+    #[test]
+    fn reanchoring_rows_up_rejects_evicted_endpoints_and_preserves_all_buffer() {
+        let selection = TerminalSelection::from_range(
+            TerminalBufferCellPos::new(1, 0),
+            TerminalBufferCellPos::new(2, 4),
+        );
+        assert_eq!(selection.reanchor_rows_up(2), None);
+
+        let all_buffer = TerminalSelection {
+            anchor: TerminalBufferCellPos::new(4, 0).into(),
+            head: TerminalBufferCellPos::new(4, 2).into(),
+            all_buffer: true,
+        };
+        assert_eq!(
+            all_buffer.reanchor_rows_up(3),
+            Some(TerminalSelection {
+                anchor: TerminalBufferCellPos::new(1, 0).into(),
+                head: TerminalBufferCellPos::new(1, 2).into(),
+                all_buffer: true,
+            })
         );
     }
 

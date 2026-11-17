@@ -9,6 +9,7 @@ use nyaterm_terminal::{TerminalClipboardLoad, TerminalEffects, TerminalSnapshot}
 
 use crate::features::NyaTermApp;
 use crate::features::formatting::trim_terminal_output_to;
+use crate::features::terminal::state::TerminalSelectionTextStatus;
 use crate::features::terminal::terminal_search_runtime::terminal_search_index_for_position;
 use crate::features::terminal::terminal_surface::terminal_snapshot_absolute_range;
 use crate::features::terminal::terminal_surface_entity::{
@@ -19,10 +20,10 @@ use crate::models::{
     TerminalFrameOutputEvent, TerminalFrameOutputSubmission, TerminalFrameParts,
     TerminalFrameSearchEvent, TerminalFrameSearchKey, TerminalFrameSearchPurpose,
     TerminalFrameSnapshotEvent, TerminalFrameSnapshotPurpose, TerminalPresentation,
-    TerminalSearchMode, TerminalViewState, TerminalWindowNode, TerminalWorkPolicy,
-    WorkspacePaneNode, terminal_action_link_matcher_key, terminal_frame_scroll_window_extra_rows,
-    terminal_frame_search_result_is_current, terminal_geometry_diagnostics_enabled,
-    terminal_snapshot_matches_grid_geometry,
+    TerminalSearchMode, TerminalSelectionTextError, TerminalViewState, TerminalWindowNode,
+    TerminalWorkPolicy, WorkspacePaneNode, terminal_action_link_matcher_key,
+    terminal_frame_scroll_window_extra_rows, terminal_frame_search_result_is_current,
+    terminal_geometry_diagnostics_enabled, terminal_snapshot_matches_grid_geometry,
 };
 
 use super::view_io::terminal_visual_display_offset;
@@ -73,27 +74,18 @@ fn terminal_view_has_cached_scrollback_snapshot_covering_offset(
     if offset == 0 {
         return view.frame_snapshot.is_some();
     }
-    if view
-        .scrollback_snapshots
-        .get(&offset)
-        .is_some_and(|snapshot| {
-            view.history_state()
-                .preserves_coordinates_from(snapshot.history)
-        })
-    {
-        return true;
-    }
     let viewport_rows = view.viewport_rows_for_ui();
     let scrollback_len = view.scrollback_len_for_ui();
     view.scrollback_snapshots.values().any(|snapshot| {
-        view.history_state()
-            .preserves_coordinates_from(snapshot.history)
-            && terminal_snapshot_covers_display_offset(
-                snapshot.as_ref(),
-                offset,
-                viewport_rows,
-                scrollback_len,
-            )
+        view.reanchored_scrollback_snapshot(snapshot)
+            .is_some_and(|snapshot| {
+                terminal_snapshot_covers_display_offset(
+                    snapshot.as_ref(),
+                    offset,
+                    viewport_rows,
+                    scrollback_len,
+                )
+            })
     })
 }
 
@@ -154,15 +146,16 @@ fn terminal_view_has_cached_scroll_snapshot_ready_for_user_scroll(
     let scrollback_len = view.scrollback_len_for_ui();
     let margin_rows = terminal_scroll_snapshot_ready_margin_rows(viewport_rows);
     view.scrollback_snapshots.values().any(|snapshot| {
-        view.history_state()
-            .preserves_coordinates_from(snapshot.history)
-            && terminal_snapshot_covers_display_offset_with_margin(
-                snapshot.as_ref(),
-                offset,
-                viewport_rows,
-                scrollback_len,
-                margin_rows,
-            )
+        view.reanchored_scrollback_snapshot(snapshot)
+            .is_some_and(|snapshot| {
+                terminal_snapshot_covers_display_offset_with_margin(
+                    snapshot.as_ref(),
+                    offset,
+                    viewport_rows,
+                    scrollback_len,
+                    margin_rows,
+                )
+            })
     })
 }
 
@@ -947,6 +940,12 @@ impl NyaTermApp {
         if !self.session.has_session(&session_id) {
             return TerminalFrameApplyResult::default();
         }
+        let previous_history = self
+            .terminal
+            .view
+            .views
+            .get(&session_id)
+            .map(TerminalViewState::history_state);
         let has_snapshot = snapshot.is_some();
         if terminal_geometry_diagnostics_enabled() {
             tracing::info!(
@@ -1128,6 +1127,21 @@ impl NyaTermApp {
         if chrome_notify {
             self.shell.note_terminal_chrome_frame_notify();
         }
+        if let Some(previous) = previous_history {
+            let current = self
+                .terminal
+                .view
+                .views
+                .get(&session_id)
+                .map(TerminalViewState::history_state);
+            if let Some(current) = current
+                && current != previous
+                && !self.reanchor_terminal_selection_for_history(&session_id, previous, current, cx)
+            {
+                self.terminal.selection.text.status =
+                    TerminalSelectionTextStatus::Failed(TerminalSelectionTextError::StaleHistory);
+            }
+        }
         // Only chrome dirtiness bubbles to NyaTermApp full-shell notify.
         TerminalFrameApplyResult {
             chrome_dirty: chrome_notify,
@@ -1197,6 +1211,12 @@ impl NyaTermApp {
         frame: TerminalFrameSnapshotEvent,
         cx: &mut Context<Self>,
     ) -> TerminalFrameApplyResult {
+        let previous_history = self
+            .terminal
+            .view
+            .views
+            .get(&frame.session_id)
+            .map(TerminalViewState::history_state);
         let current_revision = {
             let Some(view) = self.terminal.view.views.get_mut(&frame.session_id) else {
                 return TerminalFrameApplyResult::default();
@@ -1255,20 +1275,21 @@ impl NyaTermApp {
             );
             view.frame_input_highlights = frame.input_highlights;
         } else {
-            if !view
-                .history_state()
-                .preserves_coordinates_from(frame.snapshot.history)
-            {
+            // The reply was built at `frame.offset` against `frame.snapshot`'s
+            // history; the store rekeys it onto the current one and reports the
+            // offset it actually landed on.
+            let Some(stored_offset) =
+                view.remember_scrollback_snapshot(frame.offset, frame.snapshot.clone())
+            else {
                 return TerminalFrameApplyResult::default();
-            }
-            view.remember_scrollback_snapshot(frame.offset, frame.snapshot.clone());
+            };
             if let Some(action_links) = frame.action_links {
                 view.scrollback_action_links
-                    .insert(frame.offset, action_links);
+                    .insert(stored_offset, action_links);
             } else {
-                view.scrollback_action_links.remove(&frame.offset);
+                view.scrollback_action_links.remove(&stored_offset);
             }
-            view.prune_scrollback_snapshot_cache(frame.offset);
+            view.prune_scrollback_snapshot_cache(stored_offset);
         }
         if frame.offset == 0 {
             if let Some(state) = self.terminal.editing.sessions.get_mut(&frame.session_id) {
@@ -1356,6 +1377,26 @@ impl NyaTermApp {
                 frame.offset,
                 Some(frame.snapshot.as_ref()),
             );
+        }
+        if let Some(previous) = previous_history {
+            let current = self
+                .terminal
+                .view
+                .views
+                .get(&frame.session_id)
+                .map(TerminalViewState::history_state);
+            if let Some(current) = current
+                && current != previous
+                && !self.reanchor_terminal_selection_for_history(
+                    &frame.session_id,
+                    previous,
+                    current,
+                    cx,
+                )
+            {
+                self.terminal.selection.text.status =
+                    TerminalSelectionTextStatus::Failed(TerminalSelectionTextError::StaleHistory);
+            }
         }
         TerminalFrameApplyResult {
             chrome_dirty: false,

@@ -1801,6 +1801,96 @@ fn matching_scroll_snapshot_clears_pending_visual_freeze() {
 }
 
 #[test]
+fn history_eviction_reanchors_paint_state_instead_of_clearing_it() {
+    let mut screen = TerminalScreen::new(16, 3);
+    screen.set_scrollback_limit(8);
+    let output = (0..12)
+        .map(|index| format!("line-{index}\r\n"))
+        .collect::<String>();
+    screen.advance_decoded_text(&output);
+
+    let live = Arc::new(screen.viewport_snapshot(0));
+    let scrolled = Arc::new(screen.viewport_snapshot(3));
+    let viewport_rows = scrolled.row_count();
+    let scrollback_len = scrolled.scrollback_len;
+    assert_eq!(scrollback_len, 8);
+    let mut surface = TerminalSurface::new("session");
+    surface.set_decorations_and_keywords(
+        vec![TerminalLineDecorations {
+            link_ranges: vec![(1, 3)],
+            ..TerminalLineDecorations::default()
+        }],
+        empty_terminal_keyword_rules(),
+        true,
+        "block",
+    );
+    apply_test_frame_snapshot!(
+        surface,
+        live,
+        0,
+        0.0,
+        0,
+        scrollback_len,
+        viewport_rows,
+        false,
+        None,
+        0,
+        true,
+        true,
+        "block",
+    );
+    surface.apply_frame_snapshot(
+        TerminalSurfaceFrameSnapshot::new(
+            scrolled,
+            TerminalScrollVisualState {
+                history: screen.history_state(),
+                session_id: "session".to_string(),
+                scroll_offset: 3,
+                scroll_residual_lines: 0.0,
+                display_offset: 3,
+                scrollback_len,
+                viewport_rows,
+                has_new_while_scrolled: false,
+                performance_overlay: None,
+                skipped_output_chars: 0,
+            },
+        )
+        .with_presentation(true, false, "block"),
+    );
+    assert_eq!(surface.display_offset, 3);
+    let retained_rows_before = surface.retained_rows.len();
+    assert!(retained_rows_before > 0);
+
+    screen.advance_decoded_text("line-12\r\nline-13\r\n");
+    let rotated = screen.history_state();
+    assert_eq!(rotated.scrollback_len, scrollback_len);
+    surface.update_scroll_chrome_without_snapshot(&TerminalScrollVisualState {
+        history: rotated,
+        session_id: "session".to_string(),
+        scroll_offset: 5,
+        scroll_residual_lines: 0.0,
+        display_offset: 5,
+        scrollback_len,
+        viewport_rows,
+        has_new_while_scrolled: true,
+        performance_overlay: None,
+        skipped_output_chars: 0,
+    });
+
+    let snapshot = surface
+        .snapshot
+        .as_ref()
+        .expect("eviction shifts the retained frame instead of dropping it");
+    assert_eq!(snapshot.display_offset, 5);
+    assert_eq!(snapshot.scrollback_len, scrollback_len);
+    assert_eq!(snapshot.history, rotated);
+    assert_eq!(surface.retained_rows.len(), retained_rows_before);
+    assert_eq!(surface.decorations[0].link_ranges, vec![(1, 3)]);
+    assert!(surface.has_action_link_decorations);
+    assert_eq!(surface.scroll_offset, 5);
+}
+
+#[test]
 fn repeated_pending_scroll_chrome_update_is_noop() {
     let mut screen = TerminalScreen::default();
     screen.advance_decoded_text(&terminal_test_output_lines(80));

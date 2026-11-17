@@ -3991,7 +3991,7 @@ fn synthetic_command_blocks_preserve_order_without_recording_or_output_observers
 }
 
 #[test]
-fn full_history_output_reanchors_reading_and_invalidates_query_caches() {
+fn full_history_output_reanchors_reading_and_rekeys_query_caches() {
     let mut view = TerminalViewState::new();
     view.screen = TerminalScreen::new(16, 3);
     view.screen.set_scrollback_limit(8);
@@ -4009,11 +4009,61 @@ fn full_history_output_reanchors_reading_and_invalidates_query_caches() {
         view.screen.viewport_snapshot(5).line(0),
         Some(reading.as_str())
     );
-    assert!(view.scrollback_snapshots.is_empty());
-    assert!(view.pending_snapshot_offsets.is_empty());
+    assert!(!view.scrollback_snapshots.contains_key(&3));
+    let cached = view
+        .scrollback_snapshots
+        .get(&5)
+        .expect("retained frame follows the history shift");
+    assert_eq!(cached.display_offset, 5);
+    assert_eq!(cached.line(0), Some(reading.as_str()));
+    assert!(
+        view.pending_snapshot_offsets.is_empty(),
+        "in-flight requests carry literal offsets and cannot be retargeted"
+    );
     assert!(view.priority_pending_snapshot_offsets.is_empty());
-    view.remember_scrollback_snapshot(3, old_snapshot);
-    assert!(view.scrollback_snapshots.is_empty());
+    assert_eq!(view.remember_scrollback_snapshot(3, old_snapshot), Some(5));
+}
+
+#[test]
+fn scrollback_frame_built_before_eviction_is_stored_at_its_shifted_offset() {
+    let mut worker = TerminalScreen::new(16, 3);
+    worker.set_scrollback_limit(8);
+    for index in 0..11 {
+        worker.advance_decoded_text(&format!("{index}\r\n"));
+    }
+    let mut view = TerminalViewState::new();
+    view.screen.resize(16, 3);
+    view.apply_terminal_live_snapshot_frame(Arc::new(worker.snapshot()), None, 1);
+    view.scroll_offset = 3;
+    let frame = Arc::new(worker.viewport_snapshot(3));
+    let frame_history = frame.history;
+    let reading = frame.line(0).unwrap().to_string();
+    for index in 11..15 {
+        worker.advance_decoded_text(&format!("{index}\r\n"));
+        view.apply_terminal_live_snapshot_frame(Arc::new(worker.snapshot()), None, index);
+    }
+    let shift = view
+        .history_state()
+        .scrolled_since(frame_history)
+        .expect("history moved without being replaced");
+    assert!(shift > 0);
+    let expected = 3 + shift;
+    assert_eq!(
+        view.reanchored_scrollback_snapshot(&frame)
+            .expect("frame rows are still retained")
+            .display_offset,
+        expected
+    );
+    assert_eq!(
+        view.reanchored_scrollback_snapshot(&frame).unwrap().line(0),
+        Some(reading.as_str())
+    );
+    assert_eq!(view.remember_scrollback_snapshot(3, frame), Some(expected));
+    assert!(view.scrollback_snapshots.contains_key(&expected));
+    assert_eq!(
+        view.scrollback_snapshots[&expected].line(0),
+        Some(reading.as_str())
+    );
 }
 
 #[test]
