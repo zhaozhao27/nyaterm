@@ -25,6 +25,7 @@ pub use window_state::{AppShellStartup, MainWindowPlacement};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use futures::FutureExt as _;
 use gpui::{
     AnimationExt, AnyElement, App, AppContext, Context, Entity, InteractiveElement, IntoElement,
     KeyBinding, MouseButton, ParentElement, Render, Styled, Subscription, WeakEntity, Window,
@@ -44,6 +45,11 @@ use crate::{
 };
 
 const SHUTDOWN_STATUS_DELAY: Duration = Duration::from_millis(200);
+
+/// A cancelled cloud-sync operation only settles after its in-flight request
+/// returns, so quitting must not wait on it unboundedly: local persistence runs
+/// whether or not the network operation has already unwound.
+const SHUTDOWN_SYNC_GRACE: Duration = Duration::from_secs(2);
 
 actions!(
     nyaterm_native_menu,
@@ -664,7 +670,16 @@ impl AppShell {
         let operations = self.controller.read(cx).sync_operations();
         operations.pause_and_cancel();
         cx.spawn(async move |this, cx| {
-            operations.wait_for_idle().await;
+            let mut grace = cx.background_executor().timer(SHUTDOWN_SYNC_GRACE).fuse();
+            futures::select_biased! {
+                _ = operations.wait_for_idle().fuse() => {}
+                _ = grace => {
+                    tracing::warn!(
+                        pid = std::process::id(),
+                        "cloud sync still running at the shutdown grace; stopping workers anyway"
+                    );
+                }
+            }
             let _ = this.update(cx, |this, cx| {
                 this.stop_workspace_workers(launch_update, cx)
             });
@@ -804,7 +819,17 @@ impl AppShell {
             "shutdown stage started"
         );
         cx.spawn(async move |this, cx| {
-            operations.wait_for_idle().await;
+            let mut grace = cx.background_executor().timer(SHUTDOWN_SYNC_GRACE).fuse();
+            futures::select_biased! {
+                _ = operations.wait_for_idle().fuse() => {}
+                _ = grace => {
+                    tracing::warn!(
+                        pid = std::process::id(),
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "cloud sync did not stop within the shutdown grace"
+                    );
+                }
+            }
             let _ = this.update(cx, |this, cx| {
                 tracing::info!(
                     pid = std::process::id(),
